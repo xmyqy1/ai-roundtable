@@ -1,6 +1,6 @@
 {
- "version": "0.7.0",
- "notes": "自动保存到电脑、一键更新",
+ "version": "0.7.1",
+ "notes": "继续讨论时回到原来的 AI 对话（重启浏览器后也可以）",
  "files": [
   "README.md",
   "app.html",

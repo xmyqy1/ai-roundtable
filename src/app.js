@@ -173,39 +173,56 @@ async function waitComplete(tabId, timeout = 45000) {
 }
 
 // 打开（或复用）某个发言人专属的网页标签；fresh=true 时开一个新对话
+// 记住每位发言人在 AI 网站上的对话地址，下次（包括重启浏览器后）回到同一个对话继续聊
+var chatUrls = LS.get('chatUrls', {});
 async function ensureTab(key, site, fresh) {
+  const resumeUrl = !fresh && chatUrls[key];
   let st = webTabs[key];
   if (st && !(await tabAlive(st.tabId))) { delete webTabs[key]; st = null; }
-  if (st && fresh) { await chrome.tabs.update(st.tabId, { url: site.url }); st.isNew = true; }
+  if (st && fresh) { await chrome.tabs.update(st.tabId, { url: site.url }); st.isNew = true; st.hasContext = false; }
   if (!st) {
     let winOk = false;
     if (aiWindowId != null) { try { await chrome.windows.get(aiWindowId); winOk = true; } catch {} }
     let tab;
     if (winOk) {
-      tab = await chrome.tabs.create({ windowId: aiWindowId, url: site.url, active: true });
+      tab = await chrome.tabs.create({ windowId: aiWindowId, url: resumeUrl || site.url, active: true });
     } else {
       // 新开一个 AI 窗口，放在屏幕右半边，圆桌页面放左半边，方便同时看
       const W = screen.availWidth, H = screen.availHeight, L = screen.availLeft || 0, T = screen.availTop || 0;
       const half = Math.floor(W / 2);
       let win;
-      try { win = await chrome.windows.create({ url: site.url, left: L + half, top: T, width: W - half, height: H, focused: false }); }
-      catch { win = await chrome.windows.create({ url: site.url, focused: false }); }
+      try { win = await chrome.windows.create({ url: resumeUrl || site.url, left: L + half, top: T, width: W - half, height: H, focused: false }); }
+      catch { win = await chrome.windows.create({ url: resumeUrl || site.url, focused: false }); }
       aiWindowId = win.id; tab = win.tabs[0];
       try { const me = await chrome.windows.getCurrent(); await chrome.windows.update(me.id, { state: 'normal', left: L, top: T, width: half, height: H }); } catch {}
     }
-    st = webTabs[key] = { tabId: tab.id, isNew: true };
-  }
+    st = webTabs[key] = { tabId: tab.id, isNew: true, tryResume: !!resumeUrl };
+  } else if (!fresh) st.hasContext = true;
   await sleep(300);
   await waitComplete(st.tabId);
+  if (st.tryResume) {
+    st.tryResume = false;
+    await sleep(1500);
+    // 网站把我们转到了新对话（比如原对话被删了），就当作没有上下文
+    try { const t = await chrome.tabs.get(st.tabId); st.hasContext = !!t.url && sameChat(t.url, resumeUrl); } catch { st.hasContext = false; }
+  }
   return st;
 }
 
+function sameChat(a, b) { try { const x = new URL(a), y = new URL(b); return x.host === y.host && x.pathname.replace(/\/$/, '') === y.pathname.replace(/\/$/, ''); } catch { return false; } }
+async function rememberChat(key, tabId, site) {
+  try {
+    const t = await chrome.tabs.get(tabId);
+    if (t.url && !sameChat(t.url, site.url)) { chatUrls[key] = t.url; LS.set('chatUrls', chatUrls); }
+  } catch {}
+}
 async function askWeb(siteKey, key, text, onProgress, fresh, onStatus = () => {}) {
   const site = getSite(siteKey);
   if (!site) throw new Error('找不到这个网站的配置');
   onStatus(`正在打开 ${site.name} 网页，等它加载完…`);
   const st = await ensureTab(key, site, fresh);
-  onStatus('网页已加载，正在连接…');
+  if (typeof text === 'function') text = text(!!st.hasContext);
+  onStatus(st.hasContext ? '回到原来的对话，正在连接…' : '网页已加载，正在连接…');
   try { await chrome.tabs.update(st.tabId, { active: true }); } catch {}
   try {
     await chrome.scripting.executeScript({ target: { tabId: st.tabId }, files: ['content.js'] });
@@ -222,7 +239,7 @@ async function askWeb(siteKey, key, text, onProgress, fresh, onStatus = () => {}
     port.onMessage.addListener((m) => {
       if (m.type === 'progress') { partial = m.text; onProgress(m.text); }
       else if (m.type === 'status') onStatus(m.text);
-      else if (m.type === 'done') finish(resolve, m.text);
+      else if (m.type === 'done') { rememberChat(key, st.tabId, site); finish(resolve, m.text); }
       else if (m.type === 'error') finish(reject, new Error(m.error));
     });
     port.onDisconnect.addListener(() => finish(reject, new Error('网页被关闭、刷新或跳转了')));
@@ -538,7 +555,7 @@ async function speak(s, p, round, isLast, snapshot) {
   const delta = `【你上次发言之后的新内容】\n${deltaText || '（没有新内容）'}\n\n现在轮到你（${p.name}，${p.roleName}）发言，第 ${round} 轮。${instr}（不超过 ${s.config.maxLen} 字）`;
   const tabKey = s.id + '|' + p.name;
 
-  await getAnswer(s, idx, p.source, tabKey, () => (seen != null && webTabs[tabKey] ? delta : full), seen != null ? delta : full, full, false);
+  await getAnswer(s, idx, p.source, tabKey, (ctx) => (seen != null && ctx ? delta : full), seen != null ? delta : full, full, false);
   const qs = s.messages[idx].error ? [] : extractQuestions(s.messages[idx].content);
   if (qs.length) { s.messages[idx].questions = qs; updateMsgDom(s.id, idx); saveSessions(); }
   if (!s.messages[idx].error) {
@@ -552,9 +569,9 @@ async function getAnswer(s, idx, source, tabKey, webPromptFn, manualPrompt, full
   let note = '';
   if (source !== 'manual') {
     msg.streaming = true; updateMsgDom(s.id, idx);
-    const prompt = webPromptFn();
+    let prompt = '';
     try {
-      msg.content = await askWeb(source, tabKey, prompt, (t) => { msg.status = ''; msg.content = t; scheduleUpdate(s.id, idx); autoSave(); }, fresh,
+      msg.content = await askWeb(source, tabKey, (ctx) => (prompt = webPromptFn(ctx)), (t) => { msg.status = ''; msg.content = t; scheduleUpdate(s.id, idx); autoSave(); }, fresh,
         (st) => { msg.status = st; scheduleUpdate(s.id, idx); });
       msg.status = '';
       msg.streaming = false; updateMsgDom(s.id, idx); saveSessions();
@@ -563,7 +580,7 @@ async function getAnswer(s, idx, source, tabKey, webPromptFn, manualPrompt, full
       msg.streaming = false; msg.status = '';
       if (running?.stop) { msg.error = true; msg.content = '（已停止）'; updateMsgDom(s.id, idx); return; }
       note = `${sourceLabel(source)} 自动操作失败：${e.message} 已切换成复制粘贴，你可以手动发给它（或别的 AI）。`;
-      manualPrompt = prompt;
+      manualPrompt = prompt || manualPrompt;
       msg.content = '';
     }
   }

@@ -260,7 +260,9 @@ async function waitComplete(tabId, timeout = 45e3) {
     await sleep(400);
   }
 }
+var chatUrls = LS.get("chatUrls", {});
 async function ensureTab(key, site, fresh) {
+  const resumeUrl = !fresh && chatUrls[key];
   let st = webTabs[key];
   if (st && !await tabAlive(st.tabId)) {
     delete webTabs[key];
@@ -269,6 +271,7 @@ async function ensureTab(key, site, fresh) {
   if (st && fresh) {
     await chrome.tabs.update(st.tabId, { url: site.url });
     st.isNew = true;
+    st.hasContext = false;
   }
   if (!st) {
     let winOk = false;
@@ -281,15 +284,15 @@ async function ensureTab(key, site, fresh) {
     }
     let tab;
     if (winOk) {
-      tab = await chrome.tabs.create({ windowId: aiWindowId, url: site.url, active: true });
+      tab = await chrome.tabs.create({ windowId: aiWindowId, url: resumeUrl || site.url, active: true });
     } else {
       const W = screen.availWidth, H = screen.availHeight, L = screen.availLeft || 0, T = screen.availTop || 0;
       const half = Math.floor(W / 2);
       let win;
       try {
-        win = await chrome.windows.create({ url: site.url, left: L + half, top: T, width: W - half, height: H, focused: false });
+        win = await chrome.windows.create({ url: resumeUrl || site.url, left: L + half, top: T, width: W - half, height: H, focused: false });
       } catch (e) {
-        win = await chrome.windows.create({ url: site.url, focused: false });
+        win = await chrome.windows.create({ url: resumeUrl || site.url, focused: false });
       }
       aiWindowId = win.id;
       tab = win.tabs[0];
@@ -299,11 +302,39 @@ async function ensureTab(key, site, fresh) {
       } catch (e) {
       }
     }
-    st = webTabs[key] = { tabId: tab.id, isNew: true };
-  }
+    st = webTabs[key] = { tabId: tab.id, isNew: true, tryResume: !!resumeUrl };
+  } else if (!fresh) st.hasContext = true;
   await sleep(300);
   await waitComplete(st.tabId);
+  if (st.tryResume) {
+    st.tryResume = false;
+    await sleep(1500);
+    try {
+      const t = await chrome.tabs.get(st.tabId);
+      st.hasContext = !!t.url && sameChat(t.url, resumeUrl);
+    } catch (e) {
+      st.hasContext = false;
+    }
+  }
   return st;
+}
+function sameChat(a, b) {
+  try {
+    const x = new URL(a), y = new URL(b);
+    return x.host === y.host && x.pathname.replace(/\/$/, "") === y.pathname.replace(/\/$/, "");
+  } catch (e) {
+    return false;
+  }
+}
+async function rememberChat(key, tabId, site) {
+  try {
+    const t = await chrome.tabs.get(tabId);
+    if (t.url && !sameChat(t.url, site.url)) {
+      chatUrls[key] = t.url;
+      LS.set("chatUrls", chatUrls);
+    }
+  } catch (e) {
+  }
 }
 async function askWeb(siteKey, key, text, onProgress, fresh, onStatus = () => {
 }) {
@@ -311,7 +342,8 @@ async function askWeb(siteKey, key, text, onProgress, fresh, onStatus = () => {
   if (!site) throw new Error("\u627E\u4E0D\u5230\u8FD9\u4E2A\u7F51\u7AD9\u7684\u914D\u7F6E");
   onStatus(`\u6B63\u5728\u6253\u5F00 ${site.name} \u7F51\u9875\uFF0C\u7B49\u5B83\u52A0\u8F7D\u5B8C\u2026`);
   const st = await ensureTab(key, site, fresh);
-  onStatus("\u7F51\u9875\u5DF2\u52A0\u8F7D\uFF0C\u6B63\u5728\u8FDE\u63A5\u2026");
+  if (typeof text === "function") text = text(!!st.hasContext);
+  onStatus(st.hasContext ? "\u56DE\u5230\u539F\u6765\u7684\u5BF9\u8BDD\uFF0C\u6B63\u5728\u8FDE\u63A5\u2026" : "\u7F51\u9875\u5DF2\u52A0\u8F7D\uFF0C\u6B63\u5728\u8FDE\u63A5\u2026");
   try {
     await chrome.tabs.update(st.tabId, { active: true });
   } catch (e) {
@@ -348,8 +380,10 @@ async function askWeb(siteKey, key, text, onProgress, fresh, onStatus = () => {
         partial = m.text;
         onProgress(m.text);
       } else if (m.type === "status") onStatus(m.text);
-      else if (m.type === "done") finish(resolve, m.text);
-      else if (m.type === "error") finish(reject, new Error(m.error));
+      else if (m.type === "done") {
+        rememberChat(key, st.tabId, site);
+        finish(resolve, m.text);
+      } else if (m.type === "error") finish(reject, new Error(m.error));
     });
     port.onDisconnect.addListener(() => finish(reject, new Error("\u7F51\u9875\u88AB\u5173\u95ED\u3001\u5237\u65B0\u6216\u8DF3\u8F6C\u4E86")));
     port.postMessage({ type: "ask", text, cfg: site });
@@ -741,7 +775,7 @@ ${deltaText || "\uFF08\u6CA1\u6709\u65B0\u5185\u5BB9\uFF09"}
 
 \u73B0\u5728\u8F6E\u5230\u4F60\uFF08${p.name}\uFF0C${p.roleName}\uFF09\u53D1\u8A00\uFF0C\u7B2C ${round} \u8F6E\u3002${instr}\uFF08\u4E0D\u8D85\u8FC7 ${s.config.maxLen} \u5B57\uFF09`;
   const tabKey = s.id + "|" + p.name;
-  await getAnswer(s, idx, p.source, tabKey, () => seen != null && webTabs[tabKey] ? delta : full, seen != null ? delta : full, full, false);
+  await getAnswer(s, idx, p.source, tabKey, (ctx) => seen != null && ctx ? delta : full, seen != null ? delta : full, full, false);
   const qs = s.messages[idx].error ? [] : extractQuestions(s.messages[idx].content);
   if (qs.length) {
     s.messages[idx].questions = qs;
@@ -759,12 +793,12 @@ async function getAnswer(s, idx, source, tabKey, webPromptFn, manualPrompt, full
   if (source !== "manual") {
     msg.streaming = true;
     updateMsgDom(s.id, idx);
-    const prompt = webPromptFn();
+    let prompt = "";
     try {
       msg.content = await askWeb(
         source,
         tabKey,
-        prompt,
+        (ctx) => prompt = webPromptFn(ctx),
         (t) => {
           msg.status = "";
           msg.content = t;
@@ -792,7 +826,7 @@ async function getAnswer(s, idx, source, tabKey, webPromptFn, manualPrompt, full
         return;
       }
       note = `${sourceLabel(source)} \u81EA\u52A8\u64CD\u4F5C\u5931\u8D25\uFF1A${e.message} \u5DF2\u5207\u6362\u6210\u590D\u5236\u7C98\u8D34\uFF0C\u4F60\u53EF\u4EE5\u624B\u52A8\u53D1\u7ED9\u5B83\uFF08\u6216\u522B\u7684 AI\uFF09\u3002`;
-      manualPrompt = prompt;
+      manualPrompt = prompt || manualPrompt;
       msg.content = "";
     }
   }
