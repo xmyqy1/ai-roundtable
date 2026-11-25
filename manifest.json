@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI 圆桌",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "让你已登录的多个 AI 网页互相讨论，帮你做决策。",
   "action": {
     "default_title": "打开 AI 圆桌"
