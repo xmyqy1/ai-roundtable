@@ -27,19 +27,20 @@
     if (!els.length) {
       els = q('textarea, [contenteditable="true"], [contenteditable="plaintext-only"]').filter(visible).filter((e) => !e.closest('[aria-hidden="true"]') && !e.readOnly);
     }
+    els.sort((a, b) => a.getBoundingClientRect().bottom - b.getBoundingClientRect().bottom);
     return els[els.length - 1] || null;
   }
   function findSend(cfg) {
     const own = q(cfg.send).filter(visible);
     if (own.length) return own[own.length - 1];
-    const cands = q('button, [role="button"]').filter(visible).filter((b) => /send|发送|submit|提交/i.test(label(b)));
+    const cands = q('button, [role="button"]').filter(visible).filter((b) => /send|发送|submit|提交|送信/i.test(label(b)));
     return cands[cands.length - 1] || null;
   }
   const isDisabled = (b) => b.disabled || b.getAttribute("aria-disabled") === "true" || /(^|[\s_-])disabled/i.test(cls(b));
   function isGenerating(cfg) {
     if (q(cfg.stop).some(visible)) return true;
     if (q(cfg.streaming).length) return true;
-    return q('button, [role="button"]').some((b) => visible(b) && /stop|停止|中断/i.test(
+    return q('button, [role="button"]').some((b) => visible(b) && /stop|停止|中断|中止|ストップ/i.test(
       [b.getAttribute("aria-label"), b.getAttribute("data-testid"), b.getAttribute("title")].join(" ")
     ));
   }

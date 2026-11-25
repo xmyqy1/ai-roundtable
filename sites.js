@@ -18,10 +18,11 @@ const DEFAULT_SITES = {
   chatgpt: {
     name: "ChatGPT",
     url: "https://chatgpt.com/",
-    input: "#prompt-textarea",
-    send: 'button[data-testid="send-button"], #composer-submit-button',
-    response: '[data-message-author-role="assistant"]',
-    stop: 'button[data-testid="stop-button"]'
+    input: '#prompt-textarea, form div.ProseMirror[contenteditable="true"]',
+    send: 'button[data-testid="send-button"], #composer-submit-button, form button[type="submit"]',
+    response: '[data-dil-response], [data-message-author-role="assistant"]',
+    stop: 'button[data-testid="stop-button"]',
+    streaming: '[data-talvt-turn-state="in_progress"]'
   },
   claude: {
     name: "Claude",
