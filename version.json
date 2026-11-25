@@ -1,0 +1,21 @@
+{
+ "version": "0.7.0",
+ "notes": "自动保存到电脑、一键更新",
+ "files": [
+  "README.md",
+  "app.html",
+  "app.js",
+  "bg.js",
+  "build.sh",
+  "content.js",
+  "errors.js",
+  "make-version.js",
+  "manifest.json",
+  "marked.min.js",
+  "purify.min.js",
+  "sites.js",
+  "src/app.js",
+  "src/content.js",
+  "src/sites.js"
+ ]
+}

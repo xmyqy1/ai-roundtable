@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "AI 圆桌",
+  "version": "0.7.0",
+  "description": "让你已登录的多个 AI 网页互相讨论，帮你做决策。",
+  "action": {
+    "default_title": "打开 AI 圆桌"
+  },
+  "background": {
+    "service_worker": "bg.js"
+  },
+  "permissions": [
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://raw.githubusercontent.com/*",
+    "*://*.dola.com/*",
+    "*://*.doubao.com/*",
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*",
+    "https://chat.deepseek.com/*",
+    "*://*.kimi.com/*",
+    "*://kimi.moonshot.cn/*",
+    "https://tongyi.aliyun.com/*",
+    "*://*.qianwen.com/*",
+    "https://chat.qwen.ai/*",
+    "https://yuanbao.tencent.com/*",
+    "https://grok.com/*",
+    "https://*.perplexity.ai/*",
+    "https://copilot.microsoft.com/*",
+    "https://chat.mistral.ai/*",
+    "https://poe.com/*",
+    "https://chatglm.cn/*",
+    "https://yiyan.baidu.com/*",
+    "https://*.minimaxi.com/*",
+    "https://*.hailuoai.com/*",
+    "https://xinghuo.xfyun.cn/*",
+    "https://metaso.cn/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "optional_host_permissions": [
+    "*://*/*"
+  ]
+}

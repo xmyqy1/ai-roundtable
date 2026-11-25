@@ -1,0 +1,933 @@
+// ===== 基础工具 =====
+const LS = {
+  get(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch { return d; } },
+  set(k, v) { localStorage.setItem(k, JSON.stringify(v)); },
+};
+const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+const $ = (sel) => document.querySelector(sel);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const md = (t) => (window.marked && window.DOMPurify ? DOMPurify.sanitize(marked.parse(t || '')) : esc(t).replace(/\n/g, '<br>'));
+
+const ROLES = [
+  { name: '提案者', prompt: '提出你认为最好的方案，并用具体理由为它辩护。' },
+  { name: '质疑者', prompt: '扮演魔鬼代言人：专门寻找其他方案的漏洞、隐含假设、风险和反例。即使你大体同意，也要指出最薄弱的环节。' },
+  { name: '务实派', prompt: '关注可执行性：成本、时间、资源、落地步骤，以及最可能出问题的地方。' },
+  { name: '创新派', prompt: '跳出常规，提出别人没想到的替代方案或第三条路。' },
+  { name: '数据分析师', prompt: '尽量量化：给出估算、概率和对比依据，指出哪些结论缺乏证据。' },
+  { name: '用户代言人', prompt: '站在提问者的长期利益和真实处境上思考，提醒大家不要忽略提问者的约束和感受。' },
+  { name: '风险官', prompt: '专门评估风险：列出每个选项最坏会发生什么、大概有多大可能、损失多大、能不能挽回，以及怎么提前防范。' },
+  { name: '算账的', prompt: '把钱算清楚：各选项的成本、收入、现金流、时间投入和机会成本，尽量给出具体数字或区间，并说明估算依据。' },
+  { name: '法规顾问', prompt: '关注签证、在留资格、税务、劳动、公司登记等规定和合规风险。说明依据是哪条规定；不确定或可能已更新的规定要明确标出来，提醒去哪里核实。' },
+  { name: '自由发言', prompt: '不设固定立场，独立思考，实事求是。' },
+];
+const TEMPLATES = [
+  { name: '签证 / 永驻 / 在留', roles: ['提案者', '法规顾问', '风险官'], fact: true,
+    q: '【我的情况】（国籍、现在的签证/在留资格、在当地住了多久、工作和收入、家庭）\n\n【我在考虑】（比如：要不要申请永驻 / 换签证类型 / 什么时候申请）\n\n【时间和限制】\n\n【我最担心的】' },
+  { name: '创业 / 开公司 / 副业', roles: ['提案者', '质疑者', '算账的', '法规顾问'], fact: true,
+    q: '【我的情况】（现在的工作、存款、签证身份、可投入的时间）\n\n【想做的事】（做什么、跟谁合作、已经有什么资源，比如现成的网店、客户）\n\n【要决定的问题】\n\n【我最担心的】' },
+  { name: '买房 / 租房 / 搬家', roles: ['提案者', '算账的', '风险官'], fact: false,
+    q: '【我的情况】（家庭、收入、存款、工作稳定性、打算在这里住多久）\n\n【在比较的选项】（地段、价格、贷款/房租）\n\n【我最看重的】\n\n【我最担心的】' },
+  { name: '换工作 / 辞职', roles: ['提案者', '质疑者', '算账的', '用户代言人'], fact: false,
+    q: '【现在的工作】（收入、优缺点、签证是否和工作绑定）\n\n【在考虑的选择】\n\n【我想要的】（钱、成长、时间、稳定……）\n\n【我最担心的】' },
+  { name: '大额购买 / 投入', roles: ['提案者', '质疑者', '算账的'], fact: false,
+    q: '【要买/投入的是】\n\n【预算和资金来源】\n\n【在比较的选项】\n\n【用途和期待】' },
+];
+const COLORS = ['#c2602f', '#3b6fb6', '#7a4fb0', '#2f8a6f', '#b8862b', '#b0456b', '#4a8a2f', '#5a6470'];
+
+// ===== 网站配置 =====
+let siteOverrides = LS.get('siteOverrides', {});
+let customSites = LS.get('customSites', {});
+function allSites() {
+  const out = {};
+  for (const [k, v] of Object.entries(DEFAULT_SITES)) out[k] = { ...v, ...(siteOverrides[k] || {}) };
+  for (const [k, v] of Object.entries(customSites)) out[k] = { ...v, custom: true };
+  return out;
+}
+const getSite = (key) => allSites()[key];
+const sourceLabel = (src) => (src === 'manual' ? '手动复制粘贴' : (getSite(src)?.name || src) + ' 网页版');
+function sourceOptions(sel, withNone) {
+  const sites = allSites();
+  return (withNone ? `<option value="none" ${sel === 'none' ? 'selected' : ''}>不要裁判</option>` : '') +
+    Object.entries(sites).map(([k, v]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(v.name)} 网页版</option>`).join('') +
+    `<option value="manual" ${sel === 'manual' ? 'selected' : ''}>手动复制粘贴（任何 AI 都行）</option>`;
+}
+
+// ===== 会话存储 =====
+let sessions = LS.get('sessions', []);
+// 页面关闭时未完成的步骤，重新打开后标记为中断
+for (const s of sessions) for (const m of s.messages) {
+  if (m.streaming || m.manual) { m.streaming = false; m.manual = null; m.error = true; m.content = (m.content || '') + '\n（中断：页面被关闭）'; }
+}
+let currentId = null;
+let running = null; // { sessionId, stop, stoppers:Set }
+const saveSessions = () => { try { LS.set('sessions', sessions); } catch { alert('浏览器存储空间满了，请删除一些历史记录。'); } scheduleDiskSave(); };
+const current = () => sessions.find((s) => s.id === currentId);
+
+// ===== 历史列表 =====
+function renderHistory() {
+  const list = [...sessions].sort((a, b) => b.createdAt - a.createdAt);
+  $('#history').innerHTML = list.length
+    ? list.map((s) => `<div class="item ${s.id === currentId ? 'active' : ''}" data-id="${s.id}">
+        <span>🪑</span><span class="t">${esc(s.title)}</span><button class="x" data-del="${s.id}" title="删除">✕</button></div>`).join('')
+    : '<div class="muted" style="padding:8px 10px">还没有记录</div>';
+}
+$('#history').addEventListener('click', (e) => {
+  const del = e.target.closest('[data-del]');
+  if (del) {
+    e.stopPropagation();
+    if (running && running.sessionId === del.dataset.del) return alert('这个讨论还在进行，先停止它。');
+    if (!confirm('删除这条记录？')) return;
+    sessions = sessions.filter((s) => s.id !== del.dataset.del);
+    saveSessions();
+    if (currentId === del.dataset.del) { currentId = null; renderNewDebate(); }
+    return renderHistory();
+  }
+  const item = e.target.closest('[data-id]');
+  if (item) { currentId = item.dataset.id; renderHistory(); renderSession(); }
+});
+$('#btnNewDebate').onclick = () => { currentId = null; renderHistory(); renderNewDebate(); };
+$('#btnSettings').onclick = () => { currentId = null; renderHistory(); renderSettings(); };
+
+// ===== 网站设置 =====
+function renderSettings() {
+  const sites = allSites();
+  setTimeout(() => { const el = $('#profile'); if (el) el.oninput = () => { LS.set('profile', el.value); $('#profileOut').textContent = '已保存 ✓'; scheduleDiskSave(); }; });
+  $('#view').innerHTML = `
+    <h2>网站设置</h2>
+    <div class="card" id="updCard">${updateCardHtml()}</div>
+    <div class="card" id="diskCard">${diskCardHtml()}</div>
+    <div class="card">
+      <b>📋 我的背景档案</b> <span class="muted">（写一次，每次讨论自动告诉所有 AI，不用反复解释）</span>
+      <textarea id="profile" rows="6" style="margin-top:8px" placeholder="例如：住在日本，今年2月已申请永驻（审查中）；现在的工作是……；家庭情况……；朋友开公司，已经有网店可以交给我管理……">${esc(LS.get('profile', ''))}</textarea>
+      <div class="muted" id="profileOut">自动保存</div>
+    </div>
+    <div class="card">
+      <p style="margin-top:0"><b>第一步：</b>在这个浏览器里登录你想用的 AI 网站（点下面的“打开”去登录，登录一次就行）。讨论时插件会在旁边的窗口里自动打开它们、输入、读取回答。</p>
+      <p class="muted" style="margin-bottom:0">提示：讨论进行时，请让 AI 窗口保持打开、不要最小化。
+      网站改版可能导致自动操作失灵，这时那一步会自动切换成“复制粘贴”，讨论不会中断。
+      自动操作网页可能不符合部分网站的使用条款，请适度使用，例如不要短时间内跑大量讨论。</p>
+    </div>
+    <div class="sites">${Object.entries(sites).map(([k, v]) => `
+      <div class="site" data-site="${k}">
+        <div class="row"><b>${esc(v.name)}</b><div class="fit"><button class="small" data-open="${k}">打开</button>
+          ${v.custom ? `<button class="small danger" data-delsite="${k}">删除</button>` : ''}</div></div>
+        <div class="muted" style="overflow-wrap:anywhere">${esc(v.url)}</div>
+        <details style="margin-top:6px"><summary class="muted">高级：页面元素选择器</summary>
+          <textarea rows="8" data-sel="${k}">${esc(JSON.stringify({ url: v.url, input: v.input, send: v.send, response: v.response, stop: v.stop, streaming: v.streaming || '' }, null, 1))}</textarea>
+          <div class="row" style="margin-top:6px"><button class="small fit" data-savesel="${k}">保存</button>
+          ${!v.custom && siteOverrides[k] ? `<button class="small fit" data-resetsel="${k}">恢复默认</button>` : ''}<span class="muted" data-selout="${k}"></span></div>
+        </details>
+      </div>`).join('')}
+    </div>
+    <div class="card" style="margin-top:14px">
+      <b>添加其他 AI 网站</b>
+      <div class="row">
+        <div><label>名称</label><input id="csName" placeholder="例如：智谱清言"></div>
+        <div style="flex:2"><label>新对话的网址</label><input id="csUrl" placeholder="https://..."></div>
+        <button class="fit" id="csAdd">添加</button>
+      </div>
+      <div class="muted" style="margin-top:6px">添加后插件会用通用规则去找输入框和发送按钮。读取回答通常需要在“高级”里填上“回答”的 CSS 选择器；不会填也没关系，失灵时会自动切换成复制粘贴。</div>
+    </div>`;
+}
+document.addEventListener('click', async (e) => {
+  const t = e.target.closest('[data-open],[data-delsite],[data-savesel],[data-resetsel],#csAdd,[data-goto-settings]');
+  if (!t) return;
+  if (t.matches('[data-goto-settings]')) { currentId = null; renderHistory(); return renderSettings(); }
+  if (t.dataset.open) return chrome.tabs.create({ url: getSite(t.dataset.open).url });
+  if (t.dataset.delsite) {
+    if (!confirm('删除这个网站？')) return;
+    delete customSites[t.dataset.delsite]; LS.set('customSites', customSites); return renderSettings();
+  }
+  if (t.dataset.resetsel) { delete siteOverrides[t.dataset.resetsel]; LS.set('siteOverrides', siteOverrides); return renderSettings(); }
+  if (t.dataset.savesel) {
+    const k = t.dataset.savesel; const out = document.querySelector(`[data-selout="${k}"]`);
+    let v; try { v = JSON.parse(document.querySelector(`[data-sel="${k}"]`).value); } catch { out.textContent = '格式不对（需要是 JSON）'; return; }
+    if (customSites[k]) { customSites[k] = { ...customSites[k], ...v }; LS.set('customSites', customSites); }
+    else { siteOverrides[k] = v; LS.set('siteOverrides', siteOverrides); }
+    out.textContent = '已保存';
+    return;
+  }
+  if (t.id === 'csAdd') {
+    const name = $('#csName').value.trim(); const url = $('#csUrl').value.trim();
+    let origin; try { origin = new URL(url).origin; } catch { return alert('网址不对'); }
+    if (!name) return alert('填一个名称');
+    const ok = await chrome.permissions.request({ origins: [origin + '/*'] });
+    if (!ok) return alert('需要允许插件访问这个网站才能自动操作它。');
+    customSites['c_' + uid()] = { name, url, input: '', send: '', response: '', stop: '' };
+    LS.set('customSites', customSites); renderSettings();
+  }
+});
+
+// ===== 网页自动化 =====
+const webTabs = {}; // key -> { tabId }
+let aiWindowId = null;
+
+async function tabAlive(id) { try { await chrome.tabs.get(id); return true; } catch { return false; } }
+async function waitComplete(tabId, timeout = 45000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeout) {
+    try { const t = await chrome.tabs.get(tabId); if (t.status === 'complete') return; } catch { throw new Error('网页被关闭了'); }
+    await sleep(400);
+  }
+}
+
+// 打开（或复用）某个发言人专属的网页标签；fresh=true 时开一个新对话
+async function ensureTab(key, site, fresh) {
+  let st = webTabs[key];
+  if (st && !(await tabAlive(st.tabId))) { delete webTabs[key]; st = null; }
+  if (st && fresh) { await chrome.tabs.update(st.tabId, { url: site.url }); st.isNew = true; }
+  if (!st) {
+    let winOk = false;
+    if (aiWindowId != null) { try { await chrome.windows.get(aiWindowId); winOk = true; } catch {} }
+    let tab;
+    if (winOk) {
+      tab = await chrome.tabs.create({ windowId: aiWindowId, url: site.url, active: true });
+    } else {
+      // 新开一个 AI 窗口，放在屏幕右半边，圆桌页面放左半边，方便同时看
+      const W = screen.availWidth, H = screen.availHeight, L = screen.availLeft || 0, T = screen.availTop || 0;
+      const half = Math.floor(W / 2);
+      let win;
+      try { win = await chrome.windows.create({ url: site.url, left: L + half, top: T, width: W - half, height: H, focused: false }); }
+      catch { win = await chrome.windows.create({ url: site.url, focused: false }); }
+      aiWindowId = win.id; tab = win.tabs[0];
+      try { const me = await chrome.windows.getCurrent(); await chrome.windows.update(me.id, { state: 'normal', left: L, top: T, width: half, height: H }); } catch {}
+    }
+    st = webTabs[key] = { tabId: tab.id, isNew: true };
+  }
+  await sleep(300);
+  await waitComplete(st.tabId);
+  return st;
+}
+
+async function askWeb(siteKey, key, text, onProgress, fresh, onStatus = () => {}) {
+  const site = getSite(siteKey);
+  if (!site) throw new Error('找不到这个网站的配置');
+  onStatus(`正在打开 ${site.name} 网页，等它加载完…`);
+  const st = await ensureTab(key, site, fresh);
+  onStatus('网页已加载，正在连接…');
+  try { await chrome.tabs.update(st.tabId, { active: true }); } catch {}
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: st.tabId }, files: ['content.js'] });
+  } catch (e) {
+    throw new Error('无法控制这个网页：' + e.message + '（如果是自定义网站，请确认已允许访问权限）');
+  }
+  const port = chrome.tabs.connect(st.tabId, { name: 'ai-roundtable' });
+  let partial = '';
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, v) => { if (settled) return; settled = true; running?.stoppers.delete(stopper); try { port.disconnect(); } catch {} fn(v); };
+    const stopper = () => { try { port.postMessage({ type: 'stop', cfg: site }); } catch {} finish(resolve, partial + '\n\n（已停止）'); };
+    running?.stoppers.add(stopper);
+    port.onMessage.addListener((m) => {
+      if (m.type === 'progress') { partial = m.text; onProgress(m.text); }
+      else if (m.type === 'status') onStatus(m.text);
+      else if (m.type === 'done') finish(resolve, m.text);
+      else if (m.type === 'error') finish(reject, new Error(m.error));
+    });
+    port.onDisconnect.addListener(() => finish(reject, new Error('网页被关闭、刷新或跳转了')));
+    port.postMessage({ type: 'ask', text, cfg: site });
+  });
+}
+
+// ===== 手动复制粘贴 =====
+const manualWaiters = {};
+function askManual(s, idx, prompt, fullPrompt, note) {
+  const msg = s.messages[idx];
+  msg.manual = { prompt, full: fullPrompt !== prompt ? fullPrompt : '', note: note || '' };
+  updateMsgDom(s.id, idx);
+  return new Promise((resolve) => {
+    const key = s.id + ':' + idx;
+    manualWaiters[key] = (v) => { delete manualWaiters[key]; running?.stoppers.delete(stopper); resolve(v); };
+    const stopper = () => manualWaiters[key] && manualWaiters[key](null);
+    running?.stoppers.add(stopper);
+  });
+}
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-copy],[data-submit],[data-skip]');
+  if (!b) return;
+  const s = current(); if (!s) return;
+  const idx = Number(b.dataset.idx); const msg = s.messages[idx];
+  if (!msg || !msg.manual) return;
+  if (b.dataset.copy) {
+    await navigator.clipboard.writeText(b.dataset.copy === 'full' ? msg.manual.full : msg.manual.prompt);
+    const old = b.textContent; b.textContent = '已复制 ✓'; setTimeout(() => (b.textContent = old), 1500);
+    return;
+  }
+  const fn = manualWaiters[s.id + ':' + idx];
+  if (b.dataset.submit) {
+    const v = document.getElementById('paste-' + idx).value.trim();
+    if (!v) return alert('先把 AI 的回答粘贴进来');
+    fn && fn(v);
+  } else fn && fn(null);
+});
+
+// ===== 消息渲染 =====
+function scheduleUpdate(sid, idx) {
+  const key = sid + ':' + idx;
+  scheduleUpdate.p ??= new Set();
+  if (scheduleUpdate.p.has(key)) return;
+  scheduleUpdate.p.add(key);
+  setTimeout(() => { scheduleUpdate.p.delete(key); updateMsgDom(sid, idx); }, 150);
+}
+function msgHtml(m, i) {
+  if (m.kind === 'round') return `<div class="round" id="m-${i}">—— ${esc(m.content)} ——</div>`;
+  const cls = m.kind === 'user' ? 'user' : m.kind === 'judge' ? 'judge' : m.kind === 'factcheck' ? 'fact' : '';
+  const who = m.kind === 'user' ? '🙋 你' : m.kind === 'judge' ? '⚖️ 裁判总结' : m.kind === 'factcheck' ? '🔎 事实核查' : esc(m.name);
+  const meta = [m.roleName, m.modelLabel].filter(Boolean).map(esc).join(' · ');
+  let body;
+  if (m.manual) {
+    body = `<div class="manual">
+      ${m.manual.note ? `<div class="warn">${esc(m.manual.note)}</div>` : ''}
+      <div class="muted">请复制下面的内容，发给你选的 AI，再把它的回答粘贴回来：</div>
+      <pre>${esc(m.manual.prompt)}</pre>
+      <div class="row"><div class="fit"><button class="primary small" data-copy="prompt" data-idx="${i}">复制</button>
+        ${m.manual.full ? `<button class="small" data-copy="full" data-idx="${i}" title="如果你在 AI 网站新开了对话，用这个完整版">复制完整版（新开对话用）</button>` : ''}</div></div>
+      <textarea id="paste-${i}" rows="5" placeholder="把 AI 的回答粘贴到这里"></textarea>
+      <div class="row"><div class="fit"><button class="primary small" data-submit="1" data-idx="${i}">提交回答</button>
+        <button class="small" data-skip="1" data-idx="${i}">跳过这一位</button></div></div></div>`;
+  } else {
+    body = `<div class="body ${m.streaming ? 'cursor' : ''}">${m.kind === 'user' ? esc(m.content).replace(/\n/g, '<br>') : md(m.content || (m.streaming ? (m.status || '准备中…') : ''))}</div>`;
+  }
+  return `<div class="msg ${cls} ${m.error ? 'error' : ''}" id="m-${i}" style="${m.color ? '--c:' + m.color : ''}">
+    <div class="who">${who}<span class="meta">${meta}</span></div>${body}${questionsHtml(m, i)}</div>`;
+}
+function questionsHtml(m, i) {
+  if (!m.questions || !m.questions.length) return '';
+  return m.questions.map((q, qi) => `<div class="qcard">
+    <div>❓ <b>${esc(m.name)} 问你：</b>${esc(q.q)}</div>
+    ${q.answer != null ? `<div class="muted">你的回答：${esc(q.answer)}</div>` : `
+    <div class="row" style="margin-top:6px">
+      <div class="fit"><button class="small primary" data-qa="yes" data-idx="${i}" data-qi="${qi}">是</button>
+      <button class="small primary" data-qa="no" data-idx="${i}" data-qi="${qi}">否</button>
+      <button class="small" data-qa="skip" data-idx="${i}" data-qi="${qi}">不回答</button></div>
+      <input id="qa-${i}-${qi}" placeholder="或者写文字说明，回车提交" data-qtext="1" data-idx="${i}" data-qi="${qi}">
+    </div>`}</div>`).join('');
+}
+function answerQuestion(s, i, qi, answer) {
+  const m = s.messages[i]; const q = m && m.questions && m.questions[qi];
+  if (!q || q.answer != null) return;
+  q.answer = answer;
+  updateMsgDom(s.id, i);
+  if (answer !== '（不回答）') pushMsg(s, { kind: 'user', uid: uid(), content: `回答 ${m.name} 的提问「${q.q}」：${answer}` });
+  saveSessions();
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-qa]'); if (!b) return;
+  const s = current(); if (!s) return;
+  const i = Number(b.dataset.idx), qi = Number(b.dataset.qi);
+  const txt = (document.getElementById(`qa-${i}-${qi}`) || {}).value;
+  const base = { yes: '是', no: '否', skip: '（不回答）' }[b.dataset.qa];
+  answerQuestion(s, i, qi, txt && txt.trim() && b.dataset.qa !== 'skip' ? `${base}。${txt.trim()}` : base);
+});
+document.addEventListener('keydown', (e) => {
+  const el = e.target.closest && e.target.closest('[data-qtext]');
+  if (!el || e.key !== 'Enter' || e.isComposing || !el.value.trim()) return;
+  const s = current(); if (s) answerQuestion(s, Number(el.dataset.idx), Number(el.dataset.qi), el.value.trim());
+});
+function extractQuestions(text) {
+  const out = []; const re = /【问提问者】[:：\s]*([^\n]+)/g; let m;
+  while ((m = re.exec(text || '')) && out.length < 3) out.push({ q: m[1].trim(), answer: null });
+  return out;
+}
+function appendMsgDom(s, idx) {
+  if (currentId !== s.id) return;
+  const box = $('#msgs'); if (!box) return;
+  box.insertAdjacentHTML('beforeend', msgHtml(s.messages[idx], idx));
+  autoScroll(true);
+}
+function updateMsgDom(sid, idx) {
+  if (currentId !== sid) return;
+  const el = document.getElementById('m-' + idx);
+  const s = current();
+  if (!el || !s) return;
+  // 正在粘贴的内容不要被刷新掉
+  const pasting = document.getElementById('paste-' + idx);
+  const keep = pasting ? pasting.value : null;
+  el.outerHTML = msgHtml(s.messages[idx], idx);
+  if (keep && document.getElementById('paste-' + idx)) document.getElementById('paste-' + idx).value = keep;
+  autoScroll();
+}
+function autoScroll(force) {
+  const main = $('.main');
+  if (force || main.scrollHeight - main.scrollTop - main.clientHeight < 300) main.scrollTop = main.scrollHeight;
+}
+function pushMsg(s, m) { s.messages.push(m); const idx = s.messages.length - 1; appendMsgDom(s, idx); saveSessions(); return idx; }
+let lastAutoSave = 0;
+function autoSave() { if (Date.now() - lastAutoSave > 3000) { lastAutoSave = Date.now(); saveSessions(); } }
+
+function buildMd(s) {
+  let out = `# ${s.title}\n\n**问题：**\n\n${s.config.question}\n\n**参与者：** ${s.config.participants.map((p) => `${p.name}（${p.roleName}，${sourceLabel(p.source)}）`).join('、')}\n\n`;
+  for (const m of s.messages) {
+    if (m.kind === 'round') out += `\n---\n\n## ${m.content}\n\n`;
+    else if (m.kind === 'user') out += `### 🙋 我\n\n${m.content}\n\n`;
+    else if (m.kind === 'judge') out += `## ⚖️ 裁判总结（${m.modelLabel}）\n\n${m.content}\n\n`;
+    else if (m.kind === 'factcheck') out += `## 🔎 事实核查（${m.modelLabel}）\n\n${m.content}\n\n`;
+    else out += `### ${m.name}（${m.roleName}）· ${m.modelLabel}\n\n${m.content}\n\n`;
+  }
+  return out;
+}
+function exportMd(s) {
+  const out = buildMd(s);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([out], { type: 'text/markdown' }));
+  a.download = s.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40) + '.md';
+  a.click();
+}
+function stopRunning() {
+  if (!running) return;
+  running.stop = true;
+  [...running.stoppers].forEach((f) => f());
+}
+
+// ===== 新建讨论 =====
+function renderNewDebate() {
+  const sites = allSites();
+  const keys = Object.keys(sites);
+  const last = LS.get('lastDebate', null);
+  const validSrc = (x) => x === 'manual' || !!sites[x];
+  let parts = (last?.participants || []).filter((p) => validSrc(p.source));
+  if (!parts.length) {
+    parts = ['dola', 'chatgpt', 'deepseek'].map((k, i) => ({ source: k, name: sites[k].name, roleName: ROLES[i].name, rolePrompt: ROLES[i].prompt }));
+  }
+  const judge = last?.judgeSource && (last.judgeSource === 'none' || validSrc(last.judgeSource)) ? last.judgeSource : 'claude';
+  const roleOpts = (sel) => ROLES.map((r) => `<option ${r.name === sel ? 'selected' : ''}>${r.name}</option>`).join('') + `<option ${ROLES.some((r) => r.name === sel) ? '' : 'selected'}>自定义</option>`;
+  const partRow = (p) => `<div class="part">
+      <select data-p="source">${sourceOptions(p.source)}</select>
+      <input data-p="name" value="${esc(p.name)}" placeholder="发言人名字">
+      <div><select data-p="roleName">${roleOpts(p.roleName)}</select>
+      <textarea data-p="rolePrompt" placeholder="角色说明" style="margin-top:6px">${esc(p.rolePrompt)}</textarea></div>
+      <button class="small danger" data-rm>✕</button></div>`;
+
+  $('#view').innerHTML = `
+    <h2>新的圆桌讨论</h2>
+    <div class="card muted">第一次用？先去 <a href="#" data-goto-settings>网站设置</a> 在这个浏览器里登录要用的 AI 网站。</div>
+    <div class="card">
+      <div class="row"><div><label>从模板开始（可选）</label><select id="tpl"><option value="">— 不用模板 —</option>${TEMPLATES.map((t, i) => `<option value="${i}">${esc(t.name)}</option>`).join('')}</select></div></div>
+      <label>你要决策的问题（背景信息、约束条件写得越具体，讨论越有用）</label>
+      <textarea id="q" rows="5" placeholder="例如：我在考虑辞职创业做独立开发，目前存款够生活 18 个月……该不该现在辞职？">${esc(last?.questionDraft || '')}</textarea>
+    </div>
+    <div class="card">
+      <div class="row"><div><b>参与讨论的 AI</b> <span class="muted">（按顺序轮流发言；同一个网站也可以出现多次，各开一个对话）</span></div><button class="small fit" id="addPart">＋ 加一位</button></div>
+      <div class="part muted" style="margin:10px 0 2px"><span>来源</span><span>名字</span><span>角色</span><span></span></div>
+      <div id="parts">${parts.map(partRow).join('')}</div>
+    </div>
+    <div class="card row">
+      <div><label>讨论轮数</label><input id="rounds" type="number" min="1" max="10" value="${last?.rounds || 3}"></div>
+      <div><label>每次发言字数上限</label><input id="maxLen" type="number" min="50" step="50" value="${last?.maxLen || 400}"></div>
+      <div style="flex:2"><label>裁判（最后综合出决策）</label><select id="judge">${sourceOptions(judge, true)}</select></div>
+    </div>
+    <div class="card" style="display:grid;gap:10px">
+      <label style="margin:0;color:var(--text)"><input type="checkbox" id="indep" style="width:auto" ${last?.independentFirst === false ? '' : 'checked'}>
+      第一轮各自独立作答（互相看不到，避免被第一个发言的带偏）</label>
+      <label style="margin:0;color:var(--text)"><input type="checkbox" id="useProfile" style="width:auto" ${last?.useProfile === false ? '' : 'checked'}>
+      带上我的背景档案 <span class="muted">${LS.get('profile', '') ? '（' + esc(LS.get('profile', '').slice(0, 40)) + '…）' : '（还没填，<a href="#" data-goto-settings>去填写</a>）'}</span></label>
+      <div class="row"><div><label style="margin:0;color:var(--text)">🔎 事实核查：裁判总结前，让一个能联网、带来源的 AI 核查讨论里的事实和规定，并附链接</label></div>
+        <select class="fit" id="fact" style="width:220px"><option value="none">不核查</option>${sourceOptions(last?.factSource && last.factSource !== 'none' ? last.factSource : '')}</select></div>
+    </div>
+    <button class="primary" id="start" style="padding:10px 24px">开始讨论</button>`;
+
+  const box = $('#parts');
+  $('#addPart').onclick = () => {
+    const n = box.children.length; const k = keys[n % keys.length]; const r = ROLES[n % ROLES.length];
+    box.insertAdjacentHTML('beforeend', partRow({ source: k, name: sites[k].name + ' ' + (n + 1), roleName: r.name, rolePrompt: r.prompt }));
+  };
+  box.addEventListener('click', (e) => { if (e.target.closest('[data-rm]') && box.children.length > 1) e.target.closest('.part').remove(); });
+  box.addEventListener('change', (e) => {
+    const row = e.target.closest('.part');
+    if (e.target.dataset.p === 'roleName') {
+      const r = ROLES.find((x) => x.name === e.target.value);
+      row.querySelector('[data-p=rolePrompt]').value = r ? r.prompt : '';
+    }
+    if (e.target.dataset.p === 'source') row.querySelector('[data-p=name]').value = e.target.value === 'manual' ? '手动' : sites[e.target.value].name;
+  });
+  if (last?.factSource) $('#fact').value = last.factSource;
+  $('#tpl').onchange = () => {
+    const t = TEMPLATES[$('#tpl').value]; if (!t) return;
+    if ($('#q').value.trim() && !confirm('用模板替换现在写的问题？')) { $('#tpl').value = ''; return; }
+    $('#q').value = t.q;
+    // 按模板推荐的角色重排参与者（保留你选的网站）
+    const rows = [...box.children];
+    t.roles.forEach((rn, i) => {
+      let row = rows[i];
+      if (!row) { $('#addPart').click(); row = box.children[box.children.length - 1]; }
+      const r = ROLES.find((x) => x.name === rn);
+      row.querySelector('[data-p=roleName]').value = r.name;
+      row.querySelector('[data-p=rolePrompt]').value = r.prompt;
+    });
+    if (t.fact && $('#fact').value === 'none') $('#fact').value = 'perplexity';
+  };
+  $('#q').addEventListener('input', () => LS.set('lastDebate', { ...(LS.get('lastDebate', {}) || {}), questionDraft: $('#q').value }));
+
+  $('#start').onclick = () => {
+    if (running) return alert('已有一个讨论正在进行，请先等它结束或停止。');
+    const question = $('#q').value.trim();
+    if (!question) return alert('先写下你要讨论的问题。');
+    const participants = [...box.children].map((row, i) => {
+      const g = (f) => row.querySelector(`[data-p=${f}]`).value.trim();
+      return { source: g('source'), name: g('name') || `AI ${i + 1}`, roleName: g('roleName'), rolePrompt: g('rolePrompt'), color: COLORS[i % COLORS.length] };
+    });
+    const names = participants.map((p) => p.name);
+    if (new Set(names).size !== names.length) return alert('发言人名字不能重复，不然 AI 分不清谁说了什么。');
+    const config = {
+      question, participants,
+      rounds: Math.max(1, Math.min(10, Number($('#rounds').value) || 3)),
+      maxLen: Number($('#maxLen').value) || 400,
+      judgeSource: $('#judge').value,
+      independentFirst: $('#indep').checked,
+      useProfile: $('#useProfile').checked,
+      profile: $('#useProfile').checked ? LS.get('profile', '').trim() : '',
+      factSource: $('#fact').value,
+    };
+    LS.set('lastDebate', { ...config, profile: undefined, questionDraft: '' });
+    const s = { id: uid(), title: question.replace(/\s+/g, ' ').slice(0, 30), createdAt: Date.now(), config, messages: [], roundsDone: 0, seen: {} };
+    sessions.push(s); saveSessions();
+    currentId = s.id; renderHistory();
+    // 关掉之前讨论用过的 AI 标签页
+    for (const [k, v] of Object.entries(webTabs)) if (!k.startsWith(s.id + '|')) { chrome.tabs.remove(v.tabId).catch(() => {}); delete webTabs[k]; }
+    runDebate(s, config.rounds);
+  };
+}
+
+// ===== 讨论逻辑 =====
+function transcript(msgs, excludeName) {
+  return msgs.filter((m) => !m.error && m.content && !(excludeName && m.kind === 'ai' && m.name === excludeName)).map((m) => {
+    if (m.kind === 'round') return `—— ${m.content} ——`;
+    if (m.kind === 'user') return `【提问者补充说明（以此为准；如果和之前的假设冲突，请按这个修正你的分析）】\n${m.content}`;
+    if (m.kind === 'judge') return `【裁判阶段性总结】\n${m.content}`;
+    if (m.kind === 'factcheck') return `【事实核查结果（联网查证）】\n${m.content}`;
+    return `【${m.name}（${m.roleName}）】\n${m.content}`;
+  }).join('\n\n');
+}
+
+function profileBlock(s) { return s.config.profile ? `【提问者的背景档案】\n${s.config.profile}\n\n` : ''; }
+function rules(s, p) {
+  const others = s.config.participants.filter((x) => x.name !== p.name).map((x) => `${x.name}（${x.roleName}）`).join('、');
+  return `你正在参加一场由多个不同 AI 参与的圆桌讨论，目的是帮助提问者做出尽可能好的决策。讨论内容由一个工具在各个 AI 之间转达。
+你的名字是「${p.name}」，你的角色是「${p.roleName}」：${p.rolePrompt}
+其他参与者：${others || '无'}。
+
+讨论规则：
+- 针对其他参与者的具体观点回应（点名），说清楚同意什么、反对什么、为什么。
+- 被更好的论证说服时，要明确修正自己的立场；不要为了反对而反对，也不要无原则地附和。
+- 讲事实和推理；不确定的地方说明不确定，并说明需要什么信息才能确定。
+- 不要重复别人或自己已经说过的内容，每次发言都要带来新信息。
+- 每次发言不超过 ${s.config.maxLen} 字，使用与问题相同的语言。
+- 只以你自己的身份发言，不要替别人说话，不要在开头写自己的名字。
+- 如果缺少某个关键信息、会明显影响结论，可以直接问提问者：在发言最后单独一行写「【问提问者】问题」，每次最多 2 个，尽量问能用“是/否”回答的问题。提问者的回答会转给所有人。`;
+}
+
+function turnInstr(round, isLast, independent) {
+  if (round === 1 && independent) return '这是第一轮，你看不到其他人这一轮的发言。请独立给出你的分析和初步建议。';
+  if (round === 1) return '这是第一轮。请给出你的分析和初步建议；如果前面已有人发言，可以直接回应。';
+  if (isLast) return '这是最后一轮。请回应仍然存在的分歧，然后明确给出你的最终立场和建议（可以修正之前的观点）。';
+  return '请针对其他参与者的具体观点做出回应，并更新你的立场。';
+}
+
+// 让一个发言人说话：网页自动 → 失败则转手动
+async function speak(s, p, round, isLast, snapshot) {
+  const idx = pushMsg(s, { kind: 'ai', name: p.name, roleName: p.roleName, modelLabel: sourceLabel(p.source), color: p.color, content: '' });
+  // 独立作答的第一轮也要带上提问者中途补充的说明
+  const visibleMsgs = snapshot ? snapshot.concat(s.messages.slice(snapshot.length, idx).filter((m) => m.kind === 'user')) : s.messages.slice(0, idx);
+  s.sentUser ??= {};
+  const sent = new Set(s.sentUser[p.name] || []);
+  const instr = turnInstr(round, isLast, !!snapshot);
+  const full = `${rules(s, p)}\n\n${profileBlock(s)}【要决策的问题】\n${s.config.question}\n\n【目前的讨论记录】\n${transcript(visibleMsgs) || '（还没有人发言）'}\n\n现在轮到你（${p.name}）发言，第 ${round} 轮。${instr}`;
+  const seen = s.seen[p.name];
+  const deltaText = seen != null ? transcript(visibleMsgs.slice(seen).filter((m) => !(m.kind === 'user' && sent.has(m.uid))), p.name) : '';
+  const delta = `【你上次发言之后的新内容】\n${deltaText || '（没有新内容）'}\n\n现在轮到你（${p.name}，${p.roleName}）发言，第 ${round} 轮。${instr}（不超过 ${s.config.maxLen} 字）`;
+  const tabKey = s.id + '|' + p.name;
+
+  await getAnswer(s, idx, p.source, tabKey, () => (seen != null && webTabs[tabKey] ? delta : full), seen != null ? delta : full, full, false);
+  const qs = s.messages[idx].error ? [] : extractQuestions(s.messages[idx].content);
+  if (qs.length) { s.messages[idx].questions = qs; updateMsgDom(s.id, idx); saveSessions(); }
+  if (!s.messages[idx].error) {
+    s.seen[p.name] = snapshot ? snapshot.length : idx + 1;
+    s.sentUser[p.name] = [...sent, ...visibleMsgs.filter((m) => m.kind === 'user').map((m) => m.uid)];
+  }
+}
+
+async function getAnswer(s, idx, source, tabKey, webPromptFn, manualPrompt, fullPrompt, fresh) {
+  const msg = s.messages[idx];
+  let note = '';
+  if (source !== 'manual') {
+    msg.streaming = true; updateMsgDom(s.id, idx);
+    const prompt = webPromptFn();
+    try {
+      msg.content = await askWeb(source, tabKey, prompt, (t) => { msg.status = ''; msg.content = t; scheduleUpdate(s.id, idx); autoSave(); }, fresh,
+        (st) => { msg.status = st; scheduleUpdate(s.id, idx); });
+      msg.status = '';
+      msg.streaming = false; updateMsgDom(s.id, idx); saveSessions();
+      return;
+    } catch (e) {
+      msg.streaming = false; msg.status = '';
+      if (running?.stop) { msg.error = true; msg.content = '（已停止）'; updateMsgDom(s.id, idx); return; }
+      note = `${sourceLabel(source)} 自动操作失败：${e.message} 已切换成复制粘贴，你可以手动发给它（或别的 AI）。`;
+      manualPrompt = prompt;
+      msg.content = '';
+    }
+  }
+  const v = await askManual(s, idx, manualPrompt, fullPrompt, note);
+  msg.manual = null;
+  if (v == null) { msg.error = true; msg.content = running?.stop ? '（已停止）' : '（跳过）'; }
+  else msg.content = v;
+  updateMsgDom(s.id, idx); saveSessions();
+}
+
+async function runJudge(s) {
+  const src = s.config.judgeSource;
+  const idx = pushMsg(s, { kind: 'judge', modelLabel: sourceLabel(src), content: '' });
+  const prompt = `你是一场多 AI 圆桌讨论的裁判和总结者，目标是帮助提问者做出最好的决策。
+你要独立评估各方论点的质量，而不是简单折中或数票数；如果讨论中有事实错误或逻辑漏洞，要直接指出。使用与问题相同的语言。
+
+${profileBlock(s)}【要决策的问题】
+${s.config.question}
+
+【完整讨论记录】
+${transcript(s.messages.slice(0, idx))}
+
+请输出最终决策报告，包含以下部分：
+## 最终建议
+（先用一句话给出明确结论，再简要说明）
+## 核心理由
+## 共识与分歧一览
+（用两个列表：✅ 大家都同意的点；⚔️ 仍有争议的点——写清各方立场和你的裁决）
+## 各选项把握度
+（用表格：选项 | 推荐程度（★1-5） | 把握（%） | 成立的关键前提）
+## 风险与应对
+## 还需要提问者确认的信息
+## 整体共识程度
+（1-10 分，并说明各方最终是否趋于一致）
+如果有事实核查结果，以核查结果为准；被核查为错误的说法不能作为依据。`;
+  await getAnswer(s, idx, src, s.id + '|__judge', () => prompt, prompt, prompt, true);
+}
+
+async function runFactCheck(s) {
+  const src = s.config.factSource;
+  const idx = pushMsg(s, { kind: 'factcheck', modelLabel: sourceLabel(src), content: '' });
+  const prompt = `你是事实核查员。下面是一场多 AI 讨论的记录。请联网搜索，核查其中的事实性说法，尤其是法律法规、签证/在留、税务、费用、时间要求、统计数据。
+要求：
+- 逐条列出值得核查的说法（最多 10 条，优先影响决策的），每条标注 ✅ 正确 / ⚠️ 存疑或已过时 / ❌ 错误，并用一两句话说明。
+- 每条都附上来源链接（优先官方网站），写出完整网址。
+- 最后用一段话指出讨论中最需要修正的地方。使用与问题相同的语言。
+
+${profileBlock(s)}【要决策的问题】
+${s.config.question}
+
+【讨论记录】
+${transcript(s.messages.slice(0, idx))}`;
+  await getAnswer(s, idx, src, s.id + '|__fact', () => prompt, prompt, prompt, true);
+}
+
+async function runDebate(s, nRounds, judgeOnly = false) {
+  running = { sessionId: s.id, stop: false, stoppers: new Set() };
+  s.interrupted = true; s.notice = '';
+  s.seen ??= {};
+  renderSession();
+  try {
+    for (let k = 0; k < nRounds && !judgeOnly; k++) {
+      if (running.stop) break;
+      const round = s.roundsDone + 1;
+      const isLast = k === nRounds - 1;
+      pushMsg(s, { kind: 'round', content: `第 ${round} 轮` });
+      const snapshot = round === 1 && s.config.independentFirst ? s.messages.slice() : null;
+      for (const p of s.config.participants) {
+        if (running.stop) break;
+        await speak(s, p, round, isLast, snapshot);
+      }
+      if (!running.stop) s.roundsDone = round;
+      saveSessions();
+    }
+    if (!running.stop && s.config.factSource && s.config.factSource !== 'none' && !judgeOnly) await runFactCheck(s);
+    if (!running.stop && s.config.judgeSource !== 'none') await runJudge(s);
+  } catch (e) {
+    alert('出错了：' + e.message);
+  } finally {
+    running = null;
+    s.interrupted = false;
+    saveSessions();
+    if (currentId === s.id) renderSession();
+  }
+}
+
+// ===== 会话页面 =====
+function renderSession() {
+  const s = current();
+  if (!s) return renderNewDebate();
+  const isRunning = running && running.sessionId === s.id;
+  $('#view').innerHTML = `<div class="card">
+      <div class="row"><h2 style="margin:0">${esc(s.title)}</h2>
+        <div class="fit">${isRunning ? '<button class="danger" id="stop">■ 停止</button>' : ''} <button id="export">导出 Markdown</button></div></div>
+      <div style="white-space:pre-wrap;margin-top:8px">${esc(s.config.question)}</div>
+      <div style="margin-top:8px">${s.config.participants.map((p) => `<span class="tag" style="color:${p.color};background:transparent;border:1px solid ${p.color}">${esc(p.name)} · ${esc(p.roleName)}</span>`).join(' ')}</div>
+    </div>${s.notice ? `<div class="card warn">${esc(s.notice)}</div>` : ''}<div id="msgs">${s.messages.map(msgHtml).join('')}</div><div class="composer" id="composer"></div>`;
+  $('#export').onclick = () => exportMd(s);
+  if ($('#stop')) $('#stop').onclick = stopRunning;
+  const el = $('#composer');
+  if (isRunning) {
+    el.innerHTML = `<div class="box" style="flex-direction:column">
+      <textarea id="note" placeholder="随时补充说明：比如纠正 AI 的误解、补充背景。点「插入」后，接下来发言的每个 AI 都会收到。"></textarea>
+      <div class="row" style="justify-content:flex-end"><span class="muted">讨论进行中…（AI 网页在另一个窗口里，别最小化它）</span>
+        <button class="primary fit" id="addNote">插入补充说明</button><button class="small danger fit" id="stop2">停止</button></div></div>`;
+    $('#stop2').onclick = stopRunning;
+    $('#addNote').onclick = () => {
+      const t = $('#note').value.trim(); if (!t) return;
+      pushMsg(s, { kind: 'user', content: t, uid: uid() });
+      $('#note').value = ''; saveSessions();
+    };
+  } else {
+    el.innerHTML = `<div class="box" style="flex-direction:column">
+      <textarea id="input" placeholder="（可选）补充说明：纠正 AI 的误解、补充背景、追问，或让大家重点讨论某一点。写完点「继续讨论」，所有 AI 都会收到。"></textarea>
+      <div class="row" style="justify-content:flex-end">
+        <div class="fit muted">继续讨论</div>
+        <input class="fit" id="more" type="number" min="1" max="10" value="1" style="width:64px"> <span class="fit muted">轮</span>
+        <button class="primary fit" id="cont">继续讨论</button>
+        ${s.config.judgeSource !== 'none' ? '<button class="fit" id="rejudge">只让裁判重新总结</button>' : ''}
+      </div></div>`;
+    const addUser = () => { const t = $('#input').value.trim(); if (t) pushMsg(s, { kind: 'user', content: t, uid: uid() }); };
+    $('#cont').onclick = () => { if (running) return alert('已有讨论在进行'); addUser(); runDebate(s, Math.max(1, Number($('#more').value) || 1)); };
+    if ($('#rejudge')) $('#rejudge').onclick = () => { if (running) return alert('已有讨论在进行'); addUser(); runDebate(s, 0, true); };
+  }
+  $('.main').scrollTop = $('.main').scrollHeight;
+}
+
+// ===== 启动 =====
+
+
+// ===== 自动保存到电脑（文件夹） =====
+const KV = {
+  open() { return new Promise((res, rej) => { const r = indexedDB.open('ai-roundtable', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+  async get(k) { const db = await this.open(); return new Promise((res) => { const r = db.transaction('kv').objectStore('kv').get(k); r.onsuccess = () => res(r.result); r.onerror = () => res(undefined); }); },
+  async set(k, v) { const db = await this.open(); return new Promise((res) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = res; t.onerror = res; }); },
+};
+var dirHandle = null;
+var diskState = 'none'; // none | unsupported | needPermission | ok | error
+var diskError = '';
+var lastDiskSave = null;
+var diskTimer = null;
+var written = {};
+
+const pad = (n) => String(n).padStart(2, '0');
+function mdFileName(s) {
+  const d = new Date(s.createdAt);
+  const t = s.title.replace(/[\\/:*?"<>|\r\n]/g, '_').trim().slice(0, 40) || '讨论';
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}_${t}.md`;
+}
+function backupData() {
+  return { app: 'AI 圆桌', version: 1, savedAt: new Date().toISOString(), profile: LS.get('profile', ''), sessions, siteOverrides, customSites, lastDebate: LS.get('lastDebate', null) };
+}
+async function initDisk() {
+  if (!window.showDirectoryPicker) { diskState = 'unsupported'; return renderDiskUi(); }
+  try { dirHandle = await KV.get('dir'); } catch {}
+  if (dirHandle) {
+    const p = await dirHandle.queryPermission({ mode: 'readwrite' });
+    diskState = p === 'granted' ? 'ok' : 'needPermission';
+    if (diskState === 'ok') scheduleDiskSave(true);
+  }
+  renderDiskUi();
+}
+function scheduleDiskSave(now) {
+  if (diskState !== 'ok') return;
+  clearTimeout(diskTimer);
+  diskTimer = setTimeout(saveToDisk, now ? 0 : 1500);
+}
+async function writeFile(dir, key, name, text) {
+  if (written[key] === text) return;
+  const fh = await dir.getFileHandle(name, { create: true });
+  const w = await fh.createWritable();
+  await w.write(text); await w.close();
+  written[key] = text;
+}
+async function saveToDisk() {
+  if (!dirHandle || diskState !== 'ok') return;
+  try {
+    const rec = await dirHandle.getDirectoryHandle('讨论记录', { create: true });
+    for (const s of sessions) { const n = mdFileName(s); await writeFile(rec, 'rec/' + n, n, buildMd(s)); }
+    await writeFile(dirHandle, 'profile', '我的背景档案.md', '# 我的背景档案\n\n' + LS.get('profile', '') + '\n');
+    await writeFile(dirHandle, 'backup', 'AI圆桌-备份.json', JSON.stringify(backupData(), null, 1));
+    lastDiskSave = new Date();
+  } catch (e) {
+    if (e.name === 'NotAllowedError' || e.name === 'SecurityError') diskState = 'needPermission';
+    else { diskState = 'error'; diskError = e.message; }
+  }
+  renderDiskUi();
+}
+function diskStatusText() {
+  if (diskState === 'unsupported') return '这个浏览器不支持保存到文件夹，请用最新版 Chrome 或 Edge。';
+  if (diskState === 'none') return '还没选择保存位置。';
+  if (diskState === 'needPermission') return `需要你点一下「恢复自动保存」重新允许写入文件夹「${dirHandle.name}」。`;
+  if (diskState === 'error') return '保存出错：' + diskError;
+  return `✅ 正在自动保存到文件夹「${dirHandle.name}」` + (lastDiskSave ? `，最后保存 ${pad(lastDiskSave.getHours())}:${pad(lastDiskSave.getMinutes())}:${pad(lastDiskSave.getSeconds())}` : '');
+}
+function diskCardHtml() {
+  return `<b>💾 自动保存到电脑</b> <span class="muted">（换电脑时，把这个文件夹拷过去，再点「从备份导入」就能恢复）</span>
+    <div class="muted" style="margin:8px 0" id="diskStatus">${esc(diskStatusText())}</div>
+    <div class="row" style="justify-content:flex-start">
+      <button class="fit ${diskState === 'none' ? 'primary' : ''}" data-disk="pick">${dirHandle ? '换一个文件夹' : '选择保存文件夹'}</button>
+      ${diskState === 'needPermission' || diskState === 'error' ? '<button class="fit primary" data-disk="regrant">恢复自动保存</button>' : ''}
+      ${diskState === 'ok' ? '<button class="fit" data-disk="now">立即保存</button>' : ''}
+      <button class="fit" data-disk="import">从备份导入</button>
+      <input type="file" id="importFile" accept=".json,application/json" style="display:none">
+    </div>
+    <div class="muted" style="margin-top:8px">文件夹里会有：「讨论记录」文件夹（每次讨论一个 .md 文档，边讨论边更新）、「我的背景档案.md」、「AI圆桌-备份.json」（用来导入）。
+    建议选 OneDrive 里的文件夹，换电脑自动就有。浏览器重启后，Chrome 可能会请你再点一次「恢复自动保存」；授权时选「每次访问时都允许」就不用每次点了。</div>`;
+}
+function renderDiskUi() {
+  const card = document.getElementById('diskCard');
+  if (card) card.innerHTML = diskCardHtml();
+  let bar = document.getElementById('diskBar');
+  if (!bar) {
+    bar = document.createElement('div'); bar.id = 'diskBar'; bar.style.cssText = 'padding:0 14px 10px;font-size:12px';
+    const bottom = document.querySelector('.side .bottom'); bottom.parentNode.insertBefore(bar, bottom);
+  }
+  if (diskState === 'ok') bar.innerHTML = `<span class="muted">💾 自动保存到「${esc(dirHandle.name)}」${lastDiskSave ? ' ✓' : ''}</span>`;
+  else if (diskState === 'needPermission' || diskState === 'error') bar.innerHTML = '<button class="primary small" style="width:100%" data-disk="regrant">💾 点这里恢复自动保存到电脑</button>';
+  else if (diskState === 'none') bar.innerHTML = '<button class="small" style="width:100%" data-disk="gosettings">💾 设置自动保存到电脑</button>';
+  else bar.innerHTML = '';
+}
+async function importBackup(file) {
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { return alert('这个文件不是 AI 圆桌的备份。'); }
+  if (!data || !Array.isArray(data.sessions)) return alert('这个文件不是 AI 圆桌的备份。');
+  const have = new Set(sessions.map((s) => s.id));
+  const add = data.sessions.filter((s) => s && s.id && !have.has(s.id));
+  sessions.push(...add);
+  const cur = LS.get('profile', '');
+  if (data.profile && data.profile !== cur && (!cur || confirm('用备份里的背景档案替换现在的吗？\n\n备份里的：\n' + data.profile.slice(0, 200)))) LS.set('profile', data.profile);
+  if (data.customSites) { customSites = { ...data.customSites, ...customSites }; LS.set('customSites', customSites); }
+  if (data.siteOverrides) { siteOverrides = { ...data.siteOverrides, ...siteOverrides }; LS.set('siteOverrides', siteOverrides); }
+  if (data.lastDebate && !LS.get('lastDebate', null)) LS.set('lastDebate', data.lastDebate);
+  saveSessions(); renderHistory();
+  alert(`导入完成：新增 ${add.length} 条讨论记录${data.sessions.length - add.length ? `（另有 ${data.sessions.length - add.length} 条已经存在，跳过）` : ''}。`);
+  if (!current()) renderSettings();
+}
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-disk]'); if (!b) return;
+  const act = b.dataset.disk;
+  if (act === 'gosettings') { currentId = null; renderHistory(); return renderSettings(); }
+  if (act === 'pick') {
+    try {
+      dirHandle = await window.showDirectoryPicker({ id: 'ai-roundtable', mode: 'readwrite' });
+      await KV.set('dir', dirHandle);
+      Object.keys(written).forEach((k) => delete written[k]);
+      diskState = 'ok'; await saveToDisk();
+    } catch (err) { if (err.name !== 'AbortError') alert('选择文件夹失败：' + err.message); }
+    return renderDiskUi();
+  }
+  if (act === 'regrant' && dirHandle) {
+    try { const p = await dirHandle.requestPermission({ mode: 'readwrite' }); if (p === 'granted') { diskState = 'ok'; await saveToDisk(); } } catch (err) { alert(err.message); }
+    return renderDiskUi();
+  }
+  if (act === 'now') { Object.keys(written).forEach((k) => delete written[k]); return saveToDisk(); }
+  if (act === 'import') document.getElementById('importFile').click();
+});
+
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'importFile' && e.target.files[0]) { importBackup(e.target.files[0]); e.target.value = ''; }
+});
+
+// ===== 一键更新 =====
+var UPDATE_BASE = 'https://raw.githubusercontent.com/xmyqy1/ai-roundtable/main/';
+const CUR_VERSION = (window.chrome && chrome.runtime && chrome.runtime.getManifest) ? chrome.runtime.getManifest().version : '0';
+var updateInfo = null;
+var updateMsg = '';
+var updating = false;
+function newerThan(a, b) {
+  const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); }
+  return false;
+}
+async function checkUpdate(manual) {
+  if (manual) { updateMsg = '正在检查…'; renderUpdateUi(); }
+  try {
+    const r = await fetch(UPDATE_BASE + 'version.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('读取新版本信息失败（' + r.status + '）');
+    const info = await r.json();
+    if (newerThan(info.version, CUR_VERSION)) { updateInfo = info; updateMsg = ''; }
+    else { updateInfo = null; updateMsg = manual ? `已经是最新版（${CUR_VERSION}）` : ''; }
+  } catch (e) { if (manual) updateMsg = '检查失败：' + e.message; }
+  renderUpdateUi();
+}
+async function getInstallDir() {
+  let dir = await KV.get('installDir');
+  if (dir) {
+    let p = await dir.queryPermission({ mode: 'readwrite' });
+    if (p !== 'granted') p = await dir.requestPermission({ mode: 'readwrite' });
+    if (p === 'granted') return dir;
+  }
+  alert('第一次更新需要你选一下插件所在的文件夹（就是当初「加载已解压的扩展程序」时选的那个，里面有 manifest.json），并允许修改。之后就不用再选了。');
+  dir = await window.showDirectoryPicker({ id: 'ai-roundtable-install', mode: 'readwrite' });
+  // 选到上一层也没关系，自动找里面的插件文件夹
+  const isExt = async (d) => { try { const t = await (await (await d.getFileHandle('manifest.json')).getFile()).text(); return t.includes('AI 圆桌'); } catch { return false; } };
+  if (!(await isExt(dir))) {
+    let found = null;
+    for await (const [, h] of dir.entries()) if (h.kind === 'directory' && (await isExt(h))) { found = h; break; }
+    if (!found) throw new Error('这个文件夹里没找到 AI 圆桌插件（manifest.json）。请选插件所在的文件夹。');
+    dir = found;
+  }
+  await KV.set('installDir', dir);
+  return dir;
+}
+async function doUpdate() {
+  if (!updateInfo || updating) return;
+  if (running) return alert('有讨论正在进行，等它结束后再更新。');
+  updating = true; updateMsg = '正在下载新版…'; renderUpdateUi();
+  try {
+    const dir = await getInstallDir();
+    const files = {};
+    for (const f of updateInfo.files) {
+      const r = await fetch(UPDATE_BASE + f + '?v=' + updateInfo.version, { cache: 'no-store' });
+      if (!r.ok) throw new Error(`下载 ${f} 失败（${r.status}）`);
+      files[f] = await r.text();
+    }
+    files['version.json'] = JSON.stringify(updateInfo, null, 1);
+    updateMsg = '正在替换文件…'; renderUpdateUi();
+    const order = Object.keys(files).sort((x, y) => (x === 'manifest.json') - (y === 'manifest.json')); // manifest 最后写
+    for (const f of order) {
+      const parts = f.split('/'); let d = dir;
+      for (const p of parts.slice(0, -1)) d = await d.getDirectoryHandle(p, { create: true });
+      const fh = await d.getFileHandle(parts[parts.length - 1], { create: true });
+      const w = await fh.createWritable(); await w.write(files[f]); await w.close();
+    }
+    updateMsg = `已更新到 ${updateInfo.version}，正在重启插件…`; renderUpdateUi();
+    await sleep(800);
+    chrome.runtime.reload();
+  } catch (e) {
+    updating = false;
+    updateMsg = e.name === 'AbortError' ? '' : '更新失败：' + e.message;
+    renderUpdateUi();
+  }
+}
+function updateCardHtml() {
+  return `<b>🔄 插件更新</b> <span class="muted">当前版本 ${esc(CUR_VERSION)}</span>
+    ${updateInfo ? `<div style="margin:8px 0">有新版本 <b>${esc(updateInfo.version)}</b>：${esc(updateInfo.notes || '')}</div>` : ''}
+    <div class="muted" style="margin:6px 0">${esc(updateMsg)}</div>
+    <div class="row" style="justify-content:flex-start">
+      ${updateInfo ? `<button class="primary fit" data-upd="go" ${updating ? 'disabled' : ''}>一键更新</button>` : ''}
+      <button class="fit" data-upd="check">检查更新</button></div>
+    <div class="muted" style="margin-top:8px">第一次更新时要选一下插件所在的文件夹并允许修改；更新会自动下载、替换文件并重启插件，讨论记录不受影响。</div>`;
+}
+function renderUpdateUi() {
+  const card = document.getElementById('updCard'); if (card) card.innerHTML = updateCardHtml();
+  let bar = document.getElementById('updBar');
+  if (!bar) { bar = document.createElement('div'); bar.id = 'updBar'; bar.style.cssText = 'padding:0 14px 10px'; const bottom = document.querySelector('.side .bottom'); bottom.parentNode.insertBefore(bar, bottom); }
+  bar.innerHTML = updateInfo ? `<button class="primary small" style="width:100%" data-upd="go">🔄 有新版 ${esc(updateInfo.version)}，点这里更新</button>${updateMsg ? `<div class="muted" style="font-size:12px;margin-top:4px">${esc(updateMsg)}</div>` : ''}` : '';
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-upd]'); if (!b) return;
+  if (b.dataset.upd === 'check') checkUpdate(true); else doUpdate();
+});
+
+// 上次讨论被中断（比如页面刷新、插件更新）：直接打开它，可以接着讨论
+const broken = [...sessions].sort((a, b) => b.createdAt - a.createdAt).find((s) => s.interrupted);
+for (const s of sessions) if (s.interrupted) {
+  s.interrupted = false;
+  s.notice = '这次讨论在进行中被中断了（页面刷新或插件更新），前面的内容都保存着。在底部写补充说明（可选），点「继续讨论」就能接着讨论；各个 AI 会在新对话里收到完整记录。';
+}
+saveSessions();
+if (broken) currentId = broken.id;
+renderHistory();
+initDisk();
+if (broken) renderSession();
+else if (!LS.get('seenIntro', false)) { LS.set('seenIntro', true); renderSettings(); } else renderNewDebate();
+setTimeout(() => checkUpdate(false), 1500);
