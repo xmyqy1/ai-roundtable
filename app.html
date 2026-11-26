@@ -73,6 +73,25 @@ label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px
 .qcard { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--user-soft); border: 1px solid var(--line); }
 .qcard input { max-width: 340px; }
 .warn { color: var(--danger); font-size: 13px; }
+.lb { display: inline-block; font-size: 12px; line-height: 1.5; padding: 0 6px; border-radius: 6px; margin: 0 2px; font-weight: 600; }
+.lb-f { background: #dff1e4; color: #1f6b3d; } .lb-a { background: #fbefc9; color: #7a5a00; }
+.lb-j { background: #e1e9f8; color: #2c4f8f; } .lb-u { background: #ece9e4; color: #5d5a54; }
+.cp { margin-left: auto; border: none; background: none; padding: 0 4px; font-size: 12px; font-weight: 400; color: var(--muted); opacity: 0; }
+.msg:hover .cp { opacity: 1; } .cp:hover { color: var(--accent); }
+details > summary { cursor: pointer; }
+details.fold > summary { list-style: none; display: flex; gap: 10px; align-items: baseline; margin-top: 4px; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold .sum { flex: 1; }
+details.fold .more { flex: 0 0 auto; font-size: 12px; color: var(--accent); }
+details.fold .more::after { content: "展开全文 ▾"; }
+details.fold[open] .more::after { content: "收起 ▴"; }
+details.fold[open] .sum { display: none; }
+.dig { margin-top: 10px; align-items: center; }
+.statusbar { position: sticky; top: 0; z-index: 5; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: var(--accent-soft); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin-bottom: 12px; font-size: 14px; }
+.statusbar span { flex: 1; min-width: 200px; color: var(--text); }
+.statusbar span.warn { color: var(--danger); }
+#msgs.rep > :not(.judge) { display: none; }
+#histQ { margin-top: 2px; font-size: 13px; padding: 5px 10px; }
 .sites { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
 .site { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .site textarea { font: 12px/1.4 ui-monospace, Consolas, monospace; }
@@ -91,6 +110,7 @@ label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px
     <div class="top">
       <h1>🪑 AI 圆桌</h1>
       <button class="primary" id="btnNewDebate">＋ 新的圆桌讨论</button>
+      <input id="histQ" placeholder="🔍 搜索以前的讨论">
           </div>
     <div class="history" id="history"></div>
     <div class="bottom"><button id="btnSettings" style="width:100%">⚙️ 网站设置</button></div>
